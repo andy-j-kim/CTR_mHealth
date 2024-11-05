@@ -1,0 +1,882 @@
+
+---
+title: "mHealth interim analysis"
+author: "D-SINE Africa"
+date: "`r Sys.Date()`"
+output: word_document
+---
+  
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(warning = FALSE, echo=T,error = TRUE,message = FALSE) 
+
+
+
+# Loading packages
+rm(list=ls())
+#install.packages("kableExtra")
+#install.packages("systemfonts")
+#install.packages("gdtools")
+#library(kableExtra)
+#install.packages("flextable", type = "binary")
+#install.packages("officer")
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(stringr)
+library(ggplot2)
+#library(purrr)
+library(gridExtra)
+library(knitr)
+# library(kableExtra)
+# library(flextable)
+
+
+
+#Reading the dataset
+
+#outfolder<-"E:\\D-SINE Africa\\mHealth\\Analysis report\\" #Output folder
+mh_file<-"interviews_2024_09_03.csv"
+
+setwd("E:\\D-SINE Africa\\mHealth\\Datasets\\")
+mh_data<-read.csv(mh_file)
+
+```
+
+```{r dataset, echo=FALSE, results='asis'}
+
+cat(paste("Dataset:",mh_file))
+
+```
+
+
+```{r clean, include=FALSE}
+
+#Creating new variables
+mh_data<-mh_data%>%mutate(Hospital_fc=factor(Hospital,
+                                    levels=0:9,
+                                    labels=c("HLD","HRB","HRE","HRM","HRL","HCP","CUY","BRH","HDK","HDB")))%>%
+                  mutate(timepoint_fc=factor(Post_Discharge_Timepoint,  
+                            levels=0:3,
+                            labels=c("2 Weeks", "1 Month", "3 Months", "6 Months")))%>%#
+                  #mutate(n_attempts = as.numeric(Number_of_call_attempts_Made))%>% # Attempts
+                  mutate(called=as.numeric(Status_of_Last_Call_Attempt%in%c(1,2,4)))%>%
+                  mutate(n_with_outcome  = rowSums(across(matches("^Outcome_of_Call_Attempt_\\d+"),~!is.na(.x))))%>%
+                  mutate(n_with_respond  = rowSums(across( matches("^Respondent_\\d+"),~!is.na(.x))))%>%
+                  mutate(n_with_reason  =  rowSums(across(starts_with("Reason_Unavailable_"),~!is.na(.x))))%>%
+                  mutate(n_attemp_reached  = rowSums(across(matches("^Outcome_of_Call_Attempt_\\d+"),~!is.na(.x))))%>%
+  
+                  mutate(reached = as.numeric(if_any(matches("^Outcome_of_Call_Attempt_\\d+"),~.x%in% 1:2)|if_any(matches("^Reason_Unavailable_\\d+"),~.x%in% 6:10)|Status_of_Last_Call_Attempt%in%1:2))%>% # participant reached
+                  mutate(phon_disc = as.numeric(if_any(starts_with("Reason_Unavailable_"), ~ .%in%3)))%>% # disconnected
+                  mutate(no_ans = as.numeric(if_any(starts_with("Reason_Unavailable_"), ~ .==2)))%>%# No answer
+                  mutate(surveyed = as.numeric(Status_of_Last_Call_Attempt%in%1:2))%>%# survey
+  
+                  mutate(patient_alive=as.numeric(Q1_Patient_Alive ==1|Status_of_Last_Call_Attempt==1))%>%#|if_any(starts_with("Respondent_"), ~ .%in%1:2)
+                  mutate(survey_complete = as.numeric(Status_of_Last_Call_Attempt==1))%>% # survey complete
+                  
+                  mutate(gose = case_when(
+                    Q1_Patient_Alive == 0 ~ 1,
+                    X1_1_Consciousness == 0 ~ 2,
+                    X2_1_Independence_Home == 1 & Q_4_Daily_Help_for_Basic_Needs == 1 ~ 3,
+                    X3_1_Able_Shop_Without_Assistance == 0 | X4_1_Able_Travel_Locally == 0 | (X2_1_Independence_Home == 1 & Q_4_Daily_Help_for_Basic_Needs == 0) ~ 4,
+                    Q_3_Resumed_Normal_Daily_Activities == 2 | X6_2_Extent_Social_Restriction == 3 | X7_2_Freq_Change_Personality == 3 ~ 5,
+                    Q_3_Resumed_Normal_Daily_Activities == 1 | X6_2_Extent_Social_Restriction == 2 | X7_2_Freq_Change_Personality == 2 ~ 6,
+                    X8_1_Other_Problem_Daily_Life == 1 | X7_2_Freq_Change_Personality == 1 | X6_2_Extent_Social_Restriction == 1 ~ 7,
+                    X8_1_Other_Problem_Daily_Life == 0 ~ 8,
+                    TRUE ~ NA_real_
+                  )) %>%
+                  mutate(gose = factor(gose, 
+                                       levels = 1:8, 
+                                       labels = c("1, Dead", 
+                                                  "2, Vegetative state", 
+                                                  "3, Low severe disability", 
+                                                  "4, High severe disability", 
+                                                  "5, Low moderate disability", 
+                                                  "6, High moderate disability", 
+                                                  "7, Low good recovery", 
+                                                "8, High good recovery"))) # Computing the gose score
+
+
+
+
+
+
+count_table <- function(data, var) {
+  data %>%
+    group_by({{ var }}) %>%
+    summarise(n = n()) %>%
+    arrange({{ var }})
+   #bind_rows(summarise(.,{{ var }} :="Total", n = sum(n)))
+  
+}
+
+count_tbdout <- function(data, var) {
+  data %>%
+    group_by({{ var }}) %>%
+    summarise(n = n()) %>%
+    arrange({{ var }}) %>%
+    mutate("Drop out (%)" =100*(1- n / first(n)))  }
+
+
+#Cross_table function
+
+
+cross_tb <- function(data, var1, var2) {
+  
+  # Create the cross-tabulation and calculate row and column sums
+  data %>%
+    filter(!is.na({{var1 }}),!is.na({{ var2 }}))%>%
+    count({{ var1 }}, {{ var2 }}) %>%
+    pivot_wider(names_from = {{ var2 }}, values_from = n, values_fill = 0) %>%
+    mutate(Total = rowSums(across(where(is.numeric))))  %>%
+    arrange({{ var1 }})%>%
+    bind_rows(summarise(., across(where(is.numeric), sum), {{ var1 }} := "Total"))
+}
+
+
+# Without column total
+cross_tbcout <- function(data, var1, var2) {
+  
+  # Create the cross-tabulation and calculate row and column sums
+  data %>%
+    filter(!is.na({{ var1 }}), !is.na({{ var2 }})) %>%
+    count({{ var1 }}, {{ var2 }}) %>%
+    pivot_wider(names_from = {{ var2 }}, values_from = n, values_fill = 0) %>%
+    arrange({{ var1 }}) %>%
+    bind_rows(
+      summarise(., across(where(is.numeric), sum), {{ var1 }} := "Total")
+    )
+}
+# Without column total
+cross_tbrout <- function(data, var1, var2) {
+  
+  # Create the cross-tabulation and calculate row and column sums
+  data %>%
+    filter(!is.na({{ var1 }}), !is.na({{ var2 }})) %>%
+    count({{ var1 }}, {{ var2 }}) %>%
+    pivot_wider(names_from = {{ var2 }}, values_from = n, values_fill = 0) %>%
+    mutate(Total = rowSums(across(where(is.numeric))))  %>%  
+    arrange({{ var1 }}) 
+}
+
+#Function for table caption
+
+
+table_output <- function(out_table, Title, precision) {
+  
+  # Create the formatted table
+  tb <- out_table %>%
+    kable(align = "lcccc", digits = precision, caption = Title)
+  
+  # Print the table
+  print(tb)
+}
+
+
+
+
+#Function for fequency of some filtered variables
+filter_freq <- function(data, fact, var, k) {
+  data %>%
+    group_by({{ fact }}) %>%
+    filter({{ var }} == k) %>%
+    summarise(n = n()) %>%
+    arrange({{ fact }})   
+}
+#Function for fequency of some filtered variables
+filter_freqR <- function(data, fact, var, k) {
+  data %>%
+    filter({{ var }} == k) %>%
+    mutate(Total=n())%>%
+    group_by({{ fact }}) %>%
+    mutate(n = n(),perc=n*100/Total) %>%
+    distinct("Freq (n)"=n,"%"=perc)%>%
+    arrange({{ fact }})   
+}
+
+
+
+#Function: descriptive stat for quantitative data
+
+
+
+descr_stat<- function(data, fact, var) {
+  # Calculate the grouped statistics
+  grouped_stats <- data %>%
+    group_by({{ fact }}) %>%
+    summarise(
+      Mean = mean({{ var }}, na.rm = TRUE),
+      Min = min({{ var }}, na.rm = TRUE),
+      Max = max({{ var }}, na.rm = TRUE),
+      Median = median({{ var }}, na.rm = TRUE),
+      SD = sd({{ var }}, na.rm = TRUE),
+      q1 = quantile({{ var }}, probs = 0.25, na.rm = TRUE),
+      q3 = quantile({{ var }}, probs = 0.75, na.rm = TRUE),
+      IQR = paste0(q1, "-", q3)
+    )%>%arrange({{ fact }})
+  
+  # Calculate the overall summary
+  overall_summary <- data %>%
+    summarise(
+      {{ fact }} := "Overall",
+      Mean = mean({{ var }}, na.rm = TRUE),
+      Min = min({{ var }}, na.rm = TRUE),
+      Max = max({{ var }}, na.rm = TRUE),
+      Median = median({{ var }}, na.rm = TRUE),
+      SD = sd({{ var }}, na.rm = TRUE),
+      q1 = quantile({{ var }}, probs = 0.25, na.rm = TRUE),
+      q3 = quantile({{ var }}, probs = 0.75, na.rm = TRUE),
+      IQR = paste0(q1, "-", q3)
+    )
+  # Bind the overall summary to the grouped statistics
+  final_result <- bind_rows(grouped_stats, overall_summary) 
+  
+  # Return the final result as a table
+  return(final_result)
+}
+  
+  descr_mean<- function(data, fact, var) {
+    # Calculate the grouped statistics
+    grouped_stats <- data %>%
+      group_by({{ fact }}) %>%
+      summarise(
+        Mean = mean({{ var }}, na.rm = TRUE),
+        SD = sd({{ var }}, na.rm = TRUE),
+        )%>%arrange({{ fact }})
+    
+    # Calculate the overall summary
+    overall_summary <- data %>%
+      summarise(
+        {{ fact }} := "Overall",
+        Mean = mean({{ var }}, na.rm = TRUE),
+        SD = sd({{ var }}, na.rm = TRUE)
+        
+      )
+  # Bind the overall summary to the grouped statistics
+  final_result <- bind_rows(grouped_stats, overall_summary) 
+  
+  # Return the final result as a table
+  return(final_result)
+}
+
+  #Funtion frequency table
+  freq_dist <- function(data, group_var) {
+    data %>%
+      mutate(Total = n()) %>%
+      group_by({{group_var}}) %>%
+      mutate(n = n(), Total = Total) %>%
+      distinct("Frequency (n)" = n, "%" = 100 * n / Total) %>%
+      arrange({{group_var}})
+  }
+#Function barchart
+
+
+gg_bar <- function(data, var, bar_width = 0.4) {
+  data %>%
+    ggplot(aes(x = {{var}})) +
+    geom_bar(fill = "#AECDEB", color = "grey", width = bar_width) +
+    geom_text(stat = "count", aes(label = ..count..), vjust = -0.3, color = "black", size = 4) +
+    labs(y = "Count (n)", title = "") +
+    labs(x = "Time points", title = "") +
+    theme_minimal() +  # Minimal theme
+    theme(
+      panel.grid = element_blank(),  
+      axis.line = element_line(color = "black"),  
+      axis.ticks = element_line(color = "black"),
+      axis.text = element_text(size = 13),
+      axis.title = element_text(size = 15)
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+}
+
+
+#Function for histograms
+
+
+
+gg_hist<-function(data,var){
+  data%>%ggplot(aes(x ={{var}})) +
+    geom_histogram(binwidth = 1, fill = "#ADD2E0", color = "blue") +
+    scale_x_continuous(breaks = 1:10) +
+    theme_minimal()+
+    labs( y = "Count (n)", title = "") +
+    theme(panel.grid = element_blank(),
+          axis.line = element_line(color = "black"),
+          axis.ticks = element_line(color = "black"),
+          axis.text = element_text(size = 13),
+          axis.title = element_text(size = 15))
+}
+```
+
+# Objective 1: Feasibility of cellphone as a follow-up tool
+
+
+
+```{r Obj1, echo=FALSE, results='asis'}
+
+
+
+#Objective 1: Feasibility of cellphone as a follow-up tool
+
+#Follow up and call at each time point
+
+table_output(mh_data%>%group_by(Timepoint=timepoint_fc)%>%
+               mutate(fu=n(),cald=sum(called==1,na.rm=T),perc=cald*100/fu)%>%
+               distinct("Followed-up (n)"=fu,"called (n)"=cald,"%"=perc)%>%
+               arrange(Timepoint),
+             "Proportion of participants called at each timepoint with nrespect to those followed up",
+             1)
+
+cat("\nParticipant was called if the variable Status_of_Last_Call_Attempt==1,2,4")
+
+cat("\nParticipants followed-up: all participants in the dataset\nParticipants called; Var. 'Status of last call atempt': 1=Survey complete|2=Survey started but incomplete|4=Attempt(s) made but survey not started")
+
+mh_data%>%filter(called==1)%>%gg_bar(timepoint_fc)
+
+
+#Participants reached
+
+
+table_output(mh_data%>%group_by(Timepoint=timepoint_fc)%>%
+               mutate(fu=n(),cald=sum(called==1,na.rm=T),rch=sum(reached==1,na.rm=T),
+                      perc1=rch*100/fu,
+                      perc2=rch*100/cald)%>%
+               distinct("Reached (n)"=rch,"% per follow-up"=perc1,"% per called"=perc2)%>%
+               arrange(Timepoint)
+             
+             ,"Proportion of patients reached with respect to those that were called",
+             1)
+cat("\nParticipant was reached: If any of the variables Outcome_of_Call_Attempt_ == 1,2 OR if any of the variables Reason_Unavailable_ == 7:9 OR if the variable Status_of_Last_Call_Attempt ==1:2 ")
+
+mh_data%>%filter(reached==1)%>%gg_bar(timepoint_fc)
+cat("\nParticipants reached: If value for any of the variables 'Outcome_of_Call_Attempt' is: 1=A survey was started during the survey|2=Survey continued")
+
+
+
+#patients with Disconnected phone
+
+table_output(mh_data%>%group_by(Timepoint=timepoint_fc)%>%
+               mutate(fu=n(),cald=sum(called==1,na.rm=T),rch=sum(reached==1,na.rm=T),disc=sum(phon_disc==1,na.rm=T),
+                      perc1=disc*100/fu,
+                      perc2=disc*100/cald,
+                      perc3=disc*100/rch)%>%
+               distinct("Disconnected (n)"=disc,"% per follow-up"=perc1,"% per called"=perc2,"% per reached"=perc3)%>%
+               arrange(Timepoint)
+             
+             ,"Proportion of participants who had disconnected phones at any of the call attempt"
+,
+             1)
+mh_data%>%filter(phon_disc==1)%>%gg_bar(timepoint_fc)
+
+
+
+
+# Number of participants , no answer for each attempt
+table_output(mh_data%>%group_by(Timepoint=timepoint_fc)%>%
+              mutate(fu=n(),cald=sum(called==1,na.rm=T),rch=sum(reached==1,na.rm=T),noa=sum(no_ans==1,na.rm=T),
+                     perc1=noa*100/fu,
+                     perc2=noa*100/cald,
+                     perc3=noa*100/rch)%>%
+              distinct("No answer (n)"=noa,"% per follow-up"=perc1,"% per called"=perc2,"% per reached"=perc3)%>%
+              arrange(Timepoint)           
+
+             ,"Proportion of participants with no answer atany of the call attempt",
+             1)
+mh_data%>%filter(no_ans==1)%>%gg_bar(timepoint_fc)
+
+
+
+
+# •	Estimate mean, median, IQR and/ or SD
+
+
+table_output(
+  mh_data%>%filter(Number_of_call_attempts_Made>0)%>% descr_mean(timepoint_fc,Number_of_call_attempts_Made),
+  "Descriptive analysis: Mean/Median/SD number of call attempts made",2)
+
+       
+#table_output(
+ # mh_data%>%filter(Number_of_call_attempts_Made>0,reached==1)%>% descr_mean(timepoint_fc,Number_of_call_attempts_Made),
+  #           "Descriptive analysis: Mean +/ SD number of call attempts it took to successfully reach a participant",2)
+
+
+#Histograms
+
+fig1<-mh_data %>%filter(Post_Discharge_Timepoint==0,Number_of_call_attempts_Made>0)%>%gg_hist(Number_of_call_attempts_Made)+ annotate("text", x = 8, y = 1000, label = "2 weeks", size = 3)
+fig2<-mh_data %>%filter(Post_Discharge_Timepoint==1,Number_of_call_attempts_Made>0)%>%gg_hist(Number_of_call_attempts_Made)+ annotate("text", x = 7, y = 1000, label = "1 month", size = 3)
+fig3<-mh_data %>%filter(Post_Discharge_Timepoint==2,Number_of_call_attempts_Made>0)%>%gg_hist(Number_of_call_attempts_Made)+ annotate("text", x = 8, y = 1000, label = "3 months", size = 3)
+fig4<-mh_data %>%filter(Post_Discharge_Timepoint==3,Number_of_call_attempts_Made>0)%>%gg_hist(Number_of_call_attempts_Made)+ annotate("text", x = 8, y = 1000, label = "6 months", size = 3)
+grid.arrange(fig1, fig2, fig3, fig4, ncol = 2)
+
+#1.3 Participants surveyed
+
+
+
+#After being successfully reached, how many participants consented to be surveyed?")
+
+
+table_output(mh_data%>%filter(reached==1)%>%group_by(Timepoint=timepoint_fc)%>%
+               mutate(rch=n(),surv=sum(Status_of_Last_Call_Attempt%in%1:2,na.rm=T),compl=sum(Status_of_Last_Call_Attempt==1,na.rm=T),perc=surv*100/rch,percc=compl*100/surv)%>%
+               distinct("Reached (n)"=rch,"Surveyed (n)"=surv,"Completed (n)"=compl,"% surv."=perc,"% complete surv."=percc)%>%
+               arrange(Timepoint),
+             
+             "Number of participants who were surveyed after being successfully reached #Status_of_Last_Call_Attempt : values ==1,2",1)
+mh_data%>%filter(Status_of_Last_Call_Attempt%in%1:2,reached==1)%>%gg_bar(timepoint_fc)
+
+cat("\nParticipants surveyed:  Var. 'Status of last call atempt': 1=Survey complete|2=Survey started but incomplete")
+cat("\nparticipant was surveyed if the variable Status_of_Last_Call_Attempt==1,2")# 
+
+
+
+
+```
+# Objective 2: Disability Post-discharge
+
+```{r Obj2, echo=FALSE, results='asis'}
+
+
+
+
+                               
+table_output(
+             mh_data%>%group_by(Timepoint=timepoint_fc)%>% 
+               mutate(fu=n(),cald=sum(called==1,na.rm=T),rch=sum(reached==1,na.rm=T),surv=sum(surveyed==1,na.rm=T),Death=sum(Q1_Patient_Alive==0,na.rm=T),
+                      Rate1=Death*100/fu,
+                      Rate2=Death*100/cald,
+                      Rate3=Death*100/rch,
+                      Rate4=Death*100/surv)%>%
+               arrange(Timepoint)%>%
+               distinct("Death (n)"=Death,
+                        "Rate (%) per F-U"=Rate1,
+                        "Rate (%) per Called"=Rate2,
+                        "Rate (%) per Reached"=Rate3,
+                        "Rate (%) per Survey"=Rate4),
+             
+             "Deaths (frequency/proportion) at each time point",1)
+cat("\nThis table is obtained using the variable 'Patient alive ==0'")
+
+#table(mh_data$Q1_Patient_Alive)
+
+#mh_data%>%filter(Q1_Patient_Alive==0)%>%select(X1_1_Consciousness)
+
+
+table_output(
+            mh_data%>%group_by(Timepoint=timepoint_fc)%>% 
+              mutate(Death=sum(Q1_Patient_Alive==0,na.rm=T), inj_death=sum(Q_1_b_Death_Related_to_Injury==1,na.rm=T), Rate=inj_death*100/Death)%>%
+              distinct(Death,inj_death, Rate)%>%
+              distinct("Death (n)"=Death,"Injury related (n)"=inj_death,"Rate (%)"=Rate),
+
+"Proportion of deaths that were related to the injury ",
+1)
+
+
+# 2.2 Consciousness
+table_output(
+  mh_data%>%group_by(Timepoint=timepoint_fc)%>%
+    mutate(fu=n(),cald=sum(called==1,na.rm=T),rch=sum(reached==1,na.rm=T),surv=sum(surveyed==1,na.rm=T),aliv=sum(Q1_Patient_Alive==1,na.rm=T), consc=sum(X1_1_Consciousness==1,na.rm=T), 
+           prop1=consc*100/fu,
+           prop2=consc*100/cald,
+           prop3=consc*100/rch,
+           prop4=consc*100/surv,
+           prop5=consc*100/aliv)%>%
+    distinct("Conscious (n)"=consc, 
+             "% per F-U"=prop1,
+             "% per called"=prop2,
+             "% per reached"=prop3,
+             "% per surveyed"=prop4,
+             "% per those Alive"=prop5)%>%
+    arrange(Timepoint),
+  
+  "Number of patients that were conscious at each time point",1)
+                                 
+
+
+cat("\nPatient conscious: var. Consciousness ==1")
+
+# 2.3 Independence at Home
+
+table_output(
+  mh_data%>%group_by(Timepoint=timepoint_fc)%>%filter(Q1_Patient_Alive==1)%>%
+    mutate(Alive=n(), n=sum(Q_4_Daily_Help_for_Basic_Needs==1,na.rm=T), perc=100*n/Alive)%>% 
+    distinct(Alive,"Depend on caretaker"=n,"%"=perc),
+  
+  "Number of patients dependent on caretaker at home at each time point",
+  1)
+
+
+cat("\nQ_4_Daily_Help_for_Basic_Needs (value==1)")
+
+     
+
+# 2.4 Independence Outside of Home
+
+# How many patients could shop without assistance at each time point?
+#   3_1_Able_Shop_Without_Assistance (value==1)
+
+table_output(
+  mh_data%>%group_by(Timepoint=timepoint_fc)%>%filter(Q1_Patient_Alive==1)%>%
+    mutate(Alive=n(), n=sum(X3_1_Able_Shop_Without_Assistance==1,na.rm=T), perc=100*n/Alive)%>% 
+    distinct(Alive,"Shopping without assistance"=n,"%"=perc),
+  
+  "How many patients could shop without assistance at each time point?",
+  1)
+
+
+cat("\nQ_4_Daily_Help_for_Basic_Needs (value==1)")
+
+table_output(
+  mh_data%>%group_by(Timepoint=timepoint_fc)%>%filter(Q1_Patient_Alive==1)%>%
+    mutate(Alive=n(), n=sum(X4_1_Able_Travel_Locally==1,na.rm=T), perc=100*n/Alive)%>% 
+    distinct(Alive,"Local travelling without assistance"=n,"%"=perc),
+  
+  "How many patients could travel locally without assistance at each time point",
+  1)
+
+
+
+
+# Number of children that could behave appropriately outside the home at each time point
+# 4_3_Independent_Out_Ped  (value==1)
+
+
+table_output(
+  mh_data%>%group_by(Timepoint=timepoint_fc)%>%filter(Q1_Patient_Alive==1)%>%
+    mutate(Alive=n(), n=sum(X4_3_Independent_Out_Ped==1,na.rm=T), perc=100*n/Alive)%>% 
+    distinct(Alive,"Appropriate behaviour outside"=n),
+  
+  "Number of children that could behave appropriately outside the home at each time point",
+  1)
+
+
+
+#2.5 Work
+
+ 
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X5_1_Able_Work_School,1),
+  "Number of patients could work/go to school at each time point",1)
+
+
+#5_4_Work_Hour_lost 
+table_output(
+  mh_data%>% descr_stat(timepoint_fc,suppressWarnings(as.numeric(X5_4_Work_Hour_lost))),
+  
+  "Average number of Days of work/school lost",1)
+
+#mh_data%>%suppressWarnings(as.numeric(X5_4_Work_Hour_lost))%>%filter(X5_4_Work_Hour_lost>=0)%>%gg_hist(X5_4_Work_Hour_lost)
+
+#5_5_Work_Money_Loss (numeric data)
+table_output(
+ mh_data%>% descr_stat(timepoint_fc,suppressWarnings(as.numeric(X5_5_Work_Money_Loss))), 
+  "Average Household-income lost due to lost work time ",1)
+
+
+#Number of patients that could work/go to school at each time point
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X5_1_Able_Work_School,1),
+"Number of patients that could work/go to school at each time point",1)
+
+
+
+table_output(cross_tb(mh_data,timepoint_fc,X5_3_Work_Quantity),
+  "Quantification of work/school: 5_3_Work_Quantity (frequency distribution for various categories)",1)
+
+
+
+#2.6 Social and Leisure Activities
+
+
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X6_1_Engage_Social_Activities,1),
+  "Number of patients who were able to engage in social & leisure activities",1)
+
+
+
+#Extend of social restriction for those not engaged in social/leisure activities
+#6_2_Extent_Social_Restriction (distribution of categories)
+table_output(
+  mh_data%>%mutate(extent=factor(X6_2_Extent_Social_Restriction,
+                 levels=1:3,
+                 labels=c("1=Less","2=Much less","3=Not at all")))%>%
+                   cross_tb(timepoint_fc,extent),
+  "Extend of social restriction for those not engaged in social/leisure activities
+",1)
+
+
+#Frequency of new restrictions since the injury
+#6_3_Social_Restrictions_new (value==1)
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X6_3_Social_Restrictions_new,1),
+  "Frequency of new social restrictions since the injury : 6_3_Social_Restrictions_new (value==1)
+",1)
+
+
+
+
+
+#2.7 Family and Friendship
+
+#Variables 
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X7_1_Change_Personality,1),
+  "Number of patients who experienced negative change in personality/behavior at each time point
+7_1_Change_Personality (value==1)",1)
+
+
+
+table_output(
+  mh_data%>%mutate(extent=factor(X7_2_Freq_Change_Personality,
+                               levels=1:3,
+                               labels=c("1=Occasionally","2=Frequent","3=Constant")))%>%
+  cross_tb(timepoint_fc,extent),
+  "Frequency/occurrence of change I personality",1)
+
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X7_3_Change_Personality_New,1),
+  "Incidence of New change since the injury",1)
+
+
+
+
+#8_1_Other_Problem_Daily_Life
+  
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X8_1_Other_Problem_Daily_Life,1),
+  "Other problem related to injury which affect daily life",1)
+
+
+
+#8_2_Other_Problem_Daily_Life_New
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X8_2_Other_Problem_Daily_Life_New,1),
+  "New Other problem related to injury which affect daily life",1)
+
+
+
+#8_3_Other_Problem_Daily_Life_Important_Factor
+table_output(
+  mh_data%>%mutate(extent=factor(X8_3_Other_Problem_Daily_Life_Important_Factor,
+                               levels=1:3,
+                               labels=c("1=The Injury","2=Another Illness","3=Amixture of Both")))%>%
+  cross_tb(timepoint_fc,extent),
+  "Important factors related to additional problems",1)
+
+
+ 
+
+
+
+#2.8 Return to Normal Life
+table_output(
+  filter_freqR(mh_data,timepoint_fc,Q_3_Resumed_Normal_Daily_Activities,1),
+  "Number of patients who were able to return to normal daily life after their injury at each time point",
+1)
+
+
+
+
+  
+  #GOSE SCORES
+  cat("\nEstimation of GOSE scores")
+  cat("\nPatient Alive/death is not Known (missing data): gose== NA, otherwise")
+  cat("\nPatient death: gose== 1, otherwise")
+  cat("\nPatient is not conscious: gose== 2, otherwise")
+  cat("\nPatient is dependent at home or requires daily help for basic needs: gose== 3, otherwise")
+  cat("\nPatient is able to shop withouth assistance, or to travel locally, or independent at home, or does not require dayly help for basic needs: gose== 4, otherwise")
+  cat("\nQ_3_Resumed_Normal_Daily_Activities == 2 | X6_2_Extent_Social_Restriction == 3 | X7_2_Freq_Change_Personality == 3 : gose== 5, otherwise")
+  cat("\n Q_3_Resumed_Normal_Daily_Activities == 1 | X6_2_Extent_Social_Restriction == 2 | X7_2_Freq_Change_Personality == 2 : gose== 6, otherwise")
+cat("\n X8_1_Other_Problem_Daily_Life == 1 | X7_2_Freq_Change_Personality == 1 | X6_2_Extent_Social_Restriction == 1 : gose== 7, otherwise")
+ cat("\n X8_1_Other_Problem_Daily_Life == 0 : gose== 8, otherwise")
+
+
+ 
+table_output(
+mh_data %>%freq_dist(gose),
+
+"Distribution of GOSE scores",1)  
+
+
+  table_output(
+    mh_data%>%cross_tb(gose,timepoint_fc),
+    "Distibution of gose score amongst patients",0)
+
+```
+# Objective 3: Economic Hardship
+  
+  
+  
+```{r Obj3, echo=FALSE, results='asis'}
+
+#Objective 3: Economic Hardship
+#3.1 Households indicating having difficulty affording basic expenses?
+#  9_1_Economic_Afford_Expenses
+
+table_output(filter_freqR(mh_data,timepoint_fc,X9_1_Economic_Afford_Expenses,1),
+  "Number of patients whom Households indicating having difficulty affording basic expenses",1)
+
+
+
+#3.2 School drop-out rate following injury?
+
+table_output(mh_data%>%mutate(extent=factor(X9_3_Impact_School,
+                               levels=0:1,
+                               labels=c("No","Yes")))%>%
+  cross_tbrout(timepoint_fc,extent),
+
+  "Number of patients School drop-out rate following injury",0)
+
+
+
+  
+  
+  
+
+
+#3.3 How many households had to do the following due to injury:
+#9_2_Economic_Action_Sell_Asset_1(value==1)
+table_output(
+  mh_data%>%mutate(extent=factor(X9_2_Economic_Action_Sell_Asset_1,
+                                 levels=0:1,
+                                 labels=c("No","Yes")))%>%
+    cross_tbrout(timepoint_fc,extent),
+  "Number of HH Sell assets (livestock, vehicles, property etc.",1)
+  
+  
+  
+#9_2_Economic_Action_Saved_Money_2 (value==1)
+  table_output(
+    mh_data%>%mutate(extent=factor(X9_2_Economic_Action_Saved_Money_2,
+                                 levels=0:1,
+                                 labels=c("No","Yes")))%>%
+    cross_tbrout(timepoint_fc,extent),
+    "Number of HH 	that Spent saved money",1)
+  
+
+
+#9_2_Economic_Action_Borrow_Money_3 (value==1)
+  table_output(
+    mh_data%>%mutate(extent=factor(X9_2_Economic_Action_Sell_Asset_1,
+                                 levels=0:1,
+                                 labels=c("No","Yes")))%>%
+    cross_tbrout(timepoint_fc,extent), 
+    "Number of HH 	that SBorrow money due to injury",1)
+ 
+
+```
+# Objective 4: Care-seeking behaviors
+  
+  
+  
+```{r Obj4, echo=FALSE, results='asis'}
+#Objective 4: Care-seeking behaviors
+
+#10_1_more_medical_care (value==1)
+table_output(
+  mh_data%>%mutate(extent=factor(X10_1_more_medical_care,
+                                 levels=0:3,
+                                 labels=c("No","Yes","Unsure","extent")))%>%
+    cross_tbrout(timepoint_fc,extent),
+  "Proportion of patients who thought they should get more medical care at each time point?
+  ",1)
+    
+  
+  
+  
+
+#10_2_Sought_Alternative_Care (value==1)
+  table_output(
+   mh_data%>%mutate(extent=factor(X10_2_Sought_Alternative_Care,
+                               levels=0:2,
+                               labels=c("No","Yes","Unknown")))%>%
+  cross_tbrout(timepoint_fc,extent) ,  
+    "Proportion of patients who sought care from non-medical source at each time point?",1)
+
+
+
+
+# 10_3_Sought_Formal_Care (value==1)
+
+table_output(
+ mh_data%>%mutate(extent=factor(X10_3_Sought_Formal_Care,
+                               levels=0:2,
+                               labels=c("No","Yes","Unknown")))%>%
+  cross_tb(timepoint_fc,extent) , 
+ "Proportion of patients who sought formal medical care at each time point?",1)
+
+
+
+
+ # 10_4_Intention_Seek_Care (value==1)
+table_output(
+  mh_data%>%mutate(extent=factor(X10_4_Intention_Seek_Care,
+                               levels=0:2,
+                               labels=c("No","Yes","Unknown")))%>%
+  cross_tbrout(timepoint_fc,extent),
+  "Proportion of those who intended to seek further care at a hospital/clinic?",1)
+
+
+#•If they thought they needed care, but did not seek formal care, WHAT were the barriers to care ?
+  
+ 
+#10_5_Reason_Care_not_sought_Problem_Not_Serious_1 (value==1)
+  
+table_output(
+   filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Not_Serious_1,1),
+  "Reason_Care_not_sought_Problem_Not_Serious_1",1)
+ 
+  
+#10_5_Reason_Care_not_sought_Problem_Too_Expensive_2 (value==1)
+
+  table_output(
+   filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Too_Expensive_2,1), 
+    "X10_5_Reason_Care_not_sought_Problem_Too_Expensive_2",1)
+
+
+#10_5_Reason_Care_not_sought_Problem_No_Access_Health_Services_3 (value==1)
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_No_Access_Health_Services_3,1),
+    "X10_5_Reason_Care_not_sought_Problem_No_Access_Health_Services_3",1)
+
+
+#10_5_Reason_Care_not_sought_Problem_Time_Away_Prof_Resp_4 (value==1)
+table_output(
+ filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Time_Away_Prof_Resp_4,1),
+  "X10_5_Reason_Care_not_sought_Problem_Time_Away_Prof_Resp_4",1)
+
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Not_Serious_1,1),
+  "Reason_Care_not_sought_Problem_Not_Serious_1",1)
+
+
+#10_5_Reason_Care_not_sought_Problem_Personal_Preference_5 (value==1)
+
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Personal_Preference_5,1),
+  "X10_5_Reason_Care_not_sought_Problem_Personal_Preference_5",1)
+
+#10_5_Reason_Care_not_sought_Problem_Unknown_unsure_6 (value==1)
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Unknown_unsure_6,1),
+  "X10_5_Reason_Care_not_sought_Problem_Unknown_unsure_6",1)
+
+
+#10_5_Reason_Care_not_sought_Problem_Other_7 (value==1)
+table_output(
+  filter_freqR(mh_data,timepoint_fc,X10_5_Reason_Care_not_sought_Problem_Other_7,1),
+  "X10_5_Reason_Care_not_sought_Problem_Other_7",1)
+
+
+#10_5_Reason_Care_not_sought_Problem_Other_7_Specify (value==Text)
+table_output(
+  cross_tb(mh_data,X10_5_Reason_Care_not_sought_Problem_Other_7_Specify,timepoint_fc),
+  "X10_5_Reason_Care_not_sought_Problem_Other_7_Specify",1)
+
+
+```
